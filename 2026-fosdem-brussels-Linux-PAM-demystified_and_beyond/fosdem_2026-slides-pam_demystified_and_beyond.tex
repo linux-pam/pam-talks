@@ -1,0 +1,661 @@
+% Copyright (C) 2012-2026 Dmitry V. Levin <ldv@strace.io>
+% Permission is granted to copy, distribute and/or modify this document
+% under the terms of the GNU Free Documentation License, Version 1.2
+% or any later version published by the Free Software Foundation;
+% with no Invariant Sections, no Front-Cover Texts, and no Back-Cover Texts.
+
+\documentclass[unicode,aspectratio=169,xcolor={table,dvipsnames,usernames}]{beamer}
+
+\usepackage[utf8]{inputenc}
+\usepackage{alltt}
+
+\newcommand{\symlinebreak}{\textcolor{blue}{\(\hookleftarrow\)}}
+\newcommand{\symlinecont}{\textcolor{blue}{\(\longrightarrow\)}}
+
+\pgfdeclareimage[height=0.6cm]{left-corner-logo}{FOSDEM_logo.pdf}
+\pgfdeclareimage[height=0.6cm]{right-corner-logo}{pamela.jpg}
+\pgfdeclareimage[height=4cm]{title-logo}{FOSDEM_logo_hex.pdf}
+\pgfdeclareimage[height=4cm]{pam-logo}{pamela.jpg}
+\pgfdeclareimage[height=4cm]{strace-logo}{strace-straus.pdf}
+
+\usetheme{Warsaw}
+\setbeamertemplate{headline}{}
+\setbeamertemplate{footline}{\pgfuseimage{left-corner-logo} \hfill \pgfuseimage{right-corner-logo}}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{logo}{}
+\setbeamercovered{transparent}
+
+\title{\Huge Linux-PAM demystified and beyond}
+\author{\LARGE Dmitry~Levin}
+\date{\Large Brussels, 2026}
+\titlegraphic{\pgfuseimage{title-logo}}
+
+\begin{document}
+
+%%%%%%%
+\begin{frame}[noframenumbering]
+\titlepage
+\end{frame}
+
+%%%%%%%
+\begin{frame}{\Large Agenda\hfill [\insertframenumber/\inserttotalframenumber]}
+\Large
+\begin{itemize}
+	\item What and Why
+	\item Core concepts
+	\item Configuration files and modules
+	\item Configuration rules syntax
+	\item Configuration rules control values
+	\item Frozen stack
+	\item The setuid helper issue
+	\item Troubleshooting and Best Practices
+\end{itemize}
+\end{frame}
+
+%%%%%%%
+\begin{frame}{\Large What is Linux-PAM?\hfill [\insertframenumber/\inserttotalframenumber]}
+\Large
+\begin{block}{Framework}
+\begin{itemize}
+	\item shared libraries: libpam, libpamc, libpam\_misc
+	\item Pluggable Authentication Modules: pam\_*.so
+	\item configuration: /etc/pam.d/*
+\end{itemize}
+\end{block}
+\begin{block}{Purpose}
+\begin{itemize}
+	\item Enable system administrators to choose how applications authenticate users.
+	\item Switch between the authentication mechanisms without recompiling applications.
+\end{itemize}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}{\Large The "Before PAM" Problem\hfill [\insertframenumber/\inserttotalframenumber]}
+\begin{block}{Hardcoded logic}
+Every application that needed to authenticate a user had its own code \\
+	to handle /etc/passwd, later also /etc/shadow.
+\end{block}
+\begin{block}{Rigidity}
+To introduce a new authentication method like Kerberos or OTP, \\
+	every application had to be modified and recompiled.
+\end{block}
+\begin{block}{Inconsistency}
+Different applications might implement authentication, password checking, \\
+	or account lockout rules slightly differently.
+\end{block}
+\begin{block}{Limited control}
+Enforcing system-wide security policies, e.g. all interactive logins must use 2FA, \\
+	is difficult.
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}{\Large PAM management groups\hfill [\insertframenumber/\inserttotalframenumber]}
+\begin{block}{Authentication: Are you who you say you are?}
+\begin{itemize}
+	\item Verify the user's identity.
+	\item Grant credentials.
+\end{itemize}
+\end{block}
+\begin{block}{Account management: Are you {\bf allowed} to use this service {\bf right now}?}
+\begin{itemize}
+	\item Check account validity and restrictions.
+\end{itemize}
+\end{block}
+\begin{block}{Session management: What needs to be set up for your session?}
+\begin{itemize}
+	\item Actions that need to occur before the service is granted.
+	\item Actions that need to occur after the service termination.
+\end{itemize}
+\end{block}
+\begin{block}{Password management: How can you change your authentication token?}
+\begin{itemize}
+	\item Prompting for a new password.
+	\item Enforcing password quality rules.
+	\item Changing the password.
+\end{itemize}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}{\Large PAM management groups: Authentication\hfill [\insertframenumber/\inserttotalframenumber]}
+\Large
+\begin{block}{Are you who you say you are?}
+\begin{itemize}
+	\item Checking a typed password against {\it /etc/shadow} \\ (e.g. via {\it pam\_unix.so}).
+	\item Validating a U2F dongle (e.g. via {\it pam\_u2f.so}) \\ or a biometric scan (e.g. via {\it pam\_fprintd.so}).
+	\item Querying a remote server for credentials \\ (e.g. via {\it pam\_sss.so}).
+	\item Prompting for a One-Time Password.
+\end{itemize}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}{\Large PAM management groups: Account management\hfill [\insertframenumber/\inserttotalframenumber]}
+\Large
+\begin{block}{Are you {\bf allowed} to use this service {\bf right now}?}
+\begin{itemize}
+	\item Is the account enabled? Is the password not expired? \\ ({\it pam\_unix.so})
+	\item Is the account locked due to too many failed login attempts? \\ ({\it pam\_faillock.so})
+	\item Are there time-based restrictions on when this user can log in? \\ ({\it pam\_time.so})
+	\item Is the user allowed for this service? \\ ({\it pam\_access.so})
+\end{itemize}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}{\Large PAM management groups: Session management\hfill [\insertframenumber/\inserttotalframenumber]}
+\Large
+\begin{block}{What needs to be set up for your session?}
+\begin{itemize}
+	\item Initialize kernel session keyring \\ ({\it pam\_keyinit.so}).
+	\item Set resource limits \\ ({\it pam\_limits.so}).
+	\item Set the file mode creation mask \\ ({\it pam\_umask.so}).
+	\item Register user session in the login manager \\ ({\it pam\_systemd.so}).
+	\item Create a home directory \\ ({\it pam\_mkhomedir.so}).
+\end{itemize}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}{\Large PAM management groups: Password management\hfill [\insertframenumber/\inserttotalframenumber]}
+\Large
+\begin{block}{How can you change your authentication token?}
+\begin{itemize}
+	\item Prompting for a new password.
+	\item Enforcing password quality rules \\
+		({\it pam\_passwdqc.so} or {\it pam\_pwquality.so}).
+	\item Making sure the user does not use the same password \\
+		too frequently ({\it pam\_pwhistory.so}).
+	\item Changing the password \\
+		({\it pam\_unix.so}).
+\end{itemize}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}{\Large Decoupling and Flexibility\hfill [\insertframenumber/\inserttotalframenumber]}
+\begin{block}{Decoupling}
+\begin{itemize}
+	\item PAM separates the applications (like {\it login} or {\it sshd}) from the underlying authentication, account, session, and password management policies.
+	\item Applications just talk to the PAM library.
+	\item Administrators configure PAM.
+\end{itemize}
+\end{block}
+\begin{block}{Applications talk to the PAM library}
+\begin{tabular}{l|l|l}
+	{\bf type} & {\bf API function name} & {\bf description} \\
+\hline
+	auth & pam\_authenticate & Authenticate this user \\
+	auth & pam\_setcred & Manage credentials of this user \\
+\hline
+	account & pam\_acct\_mgmt & Check account validity and restrictions for this user \\
+\hline
+	password & pam\_chauthtok & Change the authentication token for this user \\
+\hline
+	session & pam\_open\_session & Set up a session for this user \\
+	session & pam\_close\_session & End the session for this user \\
+\end{tabular}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}{\Large PAM configuration files\hfill [\insertframenumber/\inserttotalframenumber]}
+\begin{block}{Service configuration files}
+\begin{itemize}
+	\item PAM configuration is service-specific.
+	\item Configuration files are stored in {\bf /etc/pam.d/}.
+	\item Service configuration files are named after services (like {\it login} or {\it sshd}).
+	\item When a service, e.g. {\it login}, needs to authenticate a user, it tells the PAM library:
+		I'm the login service, please handle this authentication based on my configuration.
+	\item If a specific service file doesn't exist, or when it doesn't specify a management group,
+		PAM falls back to a default configuration for this management group defined in /etc/pam.d/other,
+		which usually denies access.
+\end{itemize}
+\end{block}
+\begin{block}{Common configuration files}
+\begin{itemize}
+	\item conventionally stored in {\bf /etc/pam.d/}
+	\item included by service-specific configuration files and other common configuration files
+	\item used to implement system-wide policies
+\end{itemize}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}{\Large PAM Modules\hfill [\insertframenumber/\inserttotalframenumber]}
+\Large
+\begin{block}{Modules: the workhorses ({\it pam\_*.so})}
+\begin{itemize}
+	\item Modules are shared objects loaded dynamically \\ by the PAM library according to the service configuration.
+	\item Typically located in /lib/security/ or /lib64/security/.
+	\item Each module is designed to perform a specific task.
+	\item There are many modules available:
+	\item standard modules packaged along with the PAM library
+	\item other modules provided by other packages
+	\begin{description}
+		\item[pam\_deny.so] always returns failure
+		\item[pam\_permit.so] always returns access, useful as a placeholder
+	\end{description}
+\end{itemize}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}[fragile]{\Large Configuration file syntax\hfill [\insertframenumber/\inserttotalframenumber]}
+\begin{block}{PAM rule: {\bf type control module-path [module-arguments]}}
+\begin{itemize}
+	\item {\bf type}: the management group that the rule corresponds to
+	\item {\bf control}: determines how the return value of this module affects the overall outcome for the management group
+	\item {\bf module-path}: the filename of the PAM module to be used
+	\item {\bf module-arguments}: optional arguments passed to the module
+\end{itemize}
+\end{block}
+\scriptsize
+\begin{block}{Example: /etc/pam.d/login (simplified)}
+\begin{alltt}
+auth       required     pam_unix.so nullok
+account    required     pam_nologin.so
+account    required     pam_unix.so
+password   requisite    pam_passwdqc.so config=/etc/passwdqc.conf
+password   required     pam_unix.so use_authtok shadow nullok
+session    required     pam_loginuid.so
+session    optional     pam_keyinit.so force revoke
+session    required     pam_limits.so
+-session   optional     pam_systemd.so
+session    required     pam_unix.so
+\end{alltt}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}[fragile]{\Large PAM config rule control values: {\bf required} \hfill [\insertframenumber/\inserttotalframenumber]}
+\begin{block}{{\bf required}}
+\begin{itemize}
+	\item Failure will lead to the PAM framework returning failure but only after the remaining stacked modules for this management group have been invoked.
+\end{itemize}
+\end{block}
+\begin{block}{Example: /etc/pam.d/login (simplified)}
+\begin{alltt}
+auth       {\bf required}     pam_unix.so nullok
+account    {\bf required}     pam_nologin.so
+account    {\bf required}     pam_unix.so
+password    requisite   pam_passwdqc.so config=/etc/passwdqc.conf
+password    requisite   pam_pwhistory.so use_authtok
+password   {\bf required}     pam_unix.so use_authtok shadow nullok
+session    {\bf required}     pam_loginuid.so
+session     optional    pam_keyinit.so force revoke
+session    {\bf required}     pam_limits.so
+-session    optional    pam_systemd.so
+session    {\bf required}     pam_unix.so
+\end{alltt}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}[fragile]{\Large PAM config rule control values: {\bf requisite} \hfill [\insertframenumber/\inserttotalframenumber]}
+\begin{block}{{\bf requisite}}
+\begin{itemize}
+	\item Like {\bf required}, however, in the case that this module returns a failure, \\
+		control is directly returned to the application or to the superior PAM stack.
+\end{itemize}
+\end{block}
+\begin{block}{Example: /etc/pam.d/login (simplified)}
+\begin{alltt}
+auth       required     pam_unix.so nullok
+account    required     pam_nologin.so
+account    required     pam_unix.so
+password  {\bf requisite}      pam_passwdqc.so config=/etc/passwdqc.conf
+password  {\bf requisite}      pam_pwhistory.so use_authtok
+password   required     pam_unix.so use_authtok shadow nullok
+session    required     pam_loginuid.so
+session    optional     pam_keyinit.so force revoke
+session    required     pam_limits.so
+-session   optional     pam_systemd.so
+session    required     pam_unix.so
+\end{alltt}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}[fragile]{\Large PAM config rule control values: {\bf sufficient} \hfill [\insertframenumber/\inserttotalframenumber]}
+\begin{block}{{\bf sufficient}}
+\begin{itemize}
+	\item If the module succeeds and no prior {\bf required} module has failed, the PAM stack succeeds immediately without calling any further modules in the stack.
+	\item Otherwise, the return value of the module is ignored and processing of the PAM module stack continues unaffected.
+\end{itemize}
+\end{block}
+\begin{block}{Example: /etc/pam.d/su (simplified)}
+\begin{alltt}
+auth      {\bf sufficient}     pam_rootok.so
+auth       required     pam_unix.so nullok
+account   {\bf sufficient}     pam_succeed_if.so uid = 0 use_uid quiet
+account    required     pam_unix.so
+password   requisite    pam_passwdqc.so config=/etc/passwdqc.conf
+password   required     pam_unix.so use_authtok shadow nullok
+\ldots
+\end{alltt}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}[fragile]{\Large PAM config rule control values: {\bf optional} \hfill [\insertframenumber/\inserttotalframenumber]}
+\begin{block}{{\bf optional}}
+\begin{itemize}
+	\item The success or failure of this module is only important if it is the only module in the stack associated with this management group.
+\end{itemize}
+\end{block}
+\begin{block}{Example: /etc/pam.d/su (simplified)}
+\begin{alltt}
+auth       sufficient   pam_rootok.so
+auth       required     pam_unix.so nullok
+account    sufficient   pam_succeed_if.so uid = 0 use_uid quiet
+account    required     pam_unix.so
+password   requisite    pam_passwdqc.so config=/etc/passwdqc.conf
+password   required     pam_unix.so use_authtok shadow nullok
+session    {\bf optional}     pam_keyinit.so revoke
+session    required     pam_limits.so
+-session   {\bf optional}     pam_systemd.so
+session    required     pam_unix.so
+session    {\bf optional}     pam_xauth.so
+\end{alltt}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}[fragile]{\Large PAM config rule control values: {\bf include} \hfill [\insertframenumber/\inserttotalframenumber]}
+\begin{block}{{\bf include}}
+\begin{itemize}
+	\item Include all lines of the same type from the configuration file \\
+		specified as an argument to this control.
+\end{itemize}
+\end{block}
+\begin{block}{Example: /etc/pam.d/su}
+\begin{alltt}
+auth            sufficient      pam_rootok.so
+auth            required        pam_wheel.so use_uid
+auth            substack        system-auth
+auth           {\bf include}          postlogin
+account         sufficient      pam_succeed_if.so uid = 0 use_uid quiet
+account        {\bf include}          system-auth
+password       {\bf include}          system-auth
+session        {\bf include}          system-auth
+session        {\bf include}          postlogin
+session         optional        pam_xauth.so
+\end{alltt}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}[fragile]{\Large PAM config rule control values: {\bf substack} \hfill [\insertframenumber/\inserttotalframenumber]}
+\begin{block}{{\bf substack}}
+\begin{itemize}
+	\item Include all lines of the same type from the configuration file \\
+		specified as an argument to this control.
+	\item {\bf requisite} and {\bf sufficient} in a substack does not cause skipping \\
+		the rest of the complete module stack, but only of the substack.
+	\item Jumps in a substack also can not jump out of it.
+	\item The whole substack is counted as one module \\
+		when the jump is done in a parent stack.
+\end{itemize}
+\end{block}
+\begin{block}{Example: /etc/pam.d/su (excerpt)}
+\begin{alltt}
+auth            sufficient      pam_rootok.so
+auth           {\bf substack}         system-auth
+auth            include         postlogin
+\ldots
+\end{alltt}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}{\Large PAM config rule control values: advanced syntax \hfill [\insertframenumber/\inserttotalframenumber]}
+\begin{block}{The syntax: [{\it value1}={\it action1} {\it value2}={\it action2} \ldots {\it valueN}={\it actionN}]}
+\begin{description}
+	\item[valueN] corresponds to the return value returned by the module
+	\item[actionN] specifies the action
+\end{description}
+\end{block}
+\begin{block}{valueN}
+\begin{itemize}
+	\item One of predefined PAM return values: \\
+		success, open\_err, symbol\_err, service\_err, system\_err, buf\_err, perm\_denied, auth\_err, cred\_insufficient, authinfo\_unavail, user\_unknown, maxtries, new\_authtok\_reqd, acct\_expired, session\_err, cred\_unavail, cred\_expired, cred\_err, no\_module\_data, conv\_err, authtok\_err, authtok\_recover\_err, authtok\_lock\_busy, authtok\_disable\_aging, try\_again, ignore, abort, authtok\_expired, module\_unknown, bad\_item, conv\_again, incomplete.
+	\item {\bf default}: all PAM return values not mentioned explicitly.
+\end{itemize}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}{\Large PAM config rule control values: advanced syntax \hfill [\insertframenumber/\inserttotalframenumber]}
+\begin{block}{The syntax: [{\it value1}={\it action1} {\it value2}={\it action2} \ldots {\it valueN}={\it actionN}]}
+\begin{description}
+	\item[valueN] corresponds to the return value returned by the module
+	\item[actionN] specifies the action
+\end{description}
+\end{block}
+\begin{block}{actionN}
+\begin{itemize}
+	\item {\bf ignore}: return value ignored, stack processing continues
+	\item {\bf bad}: module fails, stack processing continues
+	\item {\bf die}: module fails, stack processing terminates
+	\item {\bf ok}: module succeeds, stack processing continues
+	\item {\bf done}: module succeeds; stack processing terminates \\
+		if no prior {\bf required} module has failed
+	\item {\bf reset}: the stack resets, stack processing continues
+	\item {\bf N (an unsigned integer)}: jump over the next N modules in the stack
+\end{itemize}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}{\Large PAM config rule control values: advanced syntax \hfill [\insertframenumber/\inserttotalframenumber]}
+\begin{block}{The syntax: [{\it value1}={\it action1} {\it value2}={\it action2} \ldots {\it valueN}={\it actionN}]}
+If a return value is not specifically listed via a {\it valueN} token, and \\
+the {\bf default} value is not specified, the implicit default action for it is {\bf bad}.
+\end{block}
+\begin{block}{Equivalents of traditional 4 control keywords in the advanced syntax}
+\begin{description}
+	\item[required] [success={\bf ok} new\_authtok\_reqd={\bf ok} ignore=ignore default={\bf bad}]
+	\item[requisite] [success={\bf ok} new\_authtok\_reqd={\bf ok} ignore=ignore default={\bf die}]
+	\item[sufficient] [success={\bf done} new\_authtok\_reqd={\bf done} default={\bf ignore}]
+	\item[optional] [success={\bf ok} new\_authtok\_reqd={\bf ok} default={\bf ignore}]
+\end{description}
+\end{block}
+\begin{block}{Why use this?}
+\begin{itemize}
+	\item Complex logic that traditional controls cannot express.
+	\item Conditional branching.
+\end{itemize}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}[fragile]{\Large PAM config rule control values: advanced syntax \hfill [\insertframenumber/\inserttotalframenumber]}
+\begin{block}{Example: /etc/pam.d/system-auth (excerpt)}
+\begin{alltt}
+\ldots
+password  requisite   pam_pwquality.so
+password  [success=ok default=1 ignore=ignore] {\textbackslash}
+                      pam_localuser.so
+password  requisite   pam_pwhistory.so use_authtok
+password  sufficient  pam_unix.so shadow nullok use_authtok
+password  required    pam_deny.so
+
+session   optional    pam_keyinit.so revoke
+session   required    pam_limits.so
+session   optional    pam_systemd.so
+session   [success=1 default=ignore] {\textbackslash}
+                      pam_succeed_if.so service in crond quiet use_uid
+session   required    pam_unix.so
+\ldots
+\end{alltt}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}[fragile]{\Large Frozen stack \hfill [\insertframenumber/\inserttotalframenumber]}
+\begin{block}{Example: https://github.com/linux-pam/linux-pam/issues/680}
+My custom PAM file:
+{\begin{alltt}
+\ldots
+auth [ignore=1 default=ignore] pam\_env.so envfile=/etc/test\_env
+auth required pam\_echo.so "111"
+auth required pam\_echo.so "222"
+\ldots
+\end{alltt}}
+My /etc/test\_env:
+\begin{alltt}
+TEST\_VAR=foo
+\end{alltt}
+Looks like:
+\begin{itemize}
+	\item the env variable TEST\_VAR is not set at all
+	\item pam\_env.so always return PAM\_IGNORE as I didn't see "111" in the logs
+\end{itemize}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}{\Large Frozen stack \hfill [\insertframenumber/\inserttotalframenumber]}
+\begin{block}{Applications talk to the PAM library}
+\begin{tabular}{l|l|l}
+	{\bf type} & {\bf API function name} & {\bf description} \\
+\hline
+	auth & pam\_authenticate & Authenticate this user \\
+	auth & pam\_setcred & Manage credentials of this user \\
+\hline
+	account & pam\_acct\_mgmt & Check account validity and restrictions for this user \\
+\hline
+	password & pam\_chauthtok & Change the authentication token for this user \\
+\hline
+	session & pam\_open\_session & Set up a session for this user \\
+	session & pam\_close\_session & End the session for this user \\
+\end{tabular}
+\end{block}
+\begin{block}{Frozen stack}
+	The PAM library determines and fixes the list and order of modules for a specific management group (like {\bf auth} or {\bf session}) during the first API call to the stack, \\
+	and then reusing that exact same (frozen) sequence of modules for subsequent API calls to this stack.
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}[fragile]{\Large Frozen stack \hfill [\insertframenumber/\inserttotalframenumber]}
+\begin{block}{Example: https://github.com/linux-pam/linux-pam/issues/680}
+My custom PAM file:
+{\begin{alltt}
+\ldots
+auth [ignore=1 default=ignore] pam\_env.so envfile=/etc/test\_env
+auth required pam\_echo.so "111"
+auth required pam\_echo.so "222"
+\ldots
+\end{alltt}}
+\begin{itemize}
+	\item When invoked by pam\_authenticate, pam\_env.so does nothing \\
+		and always returns PAM\_IGNORE.
+	\item After pam\_authenticate the PAM auth stack is already frozen, \\
+		so during pam\_setcred the modules are being called in the same order \\
+		as they were called during pam\_authenticate.
+\end{itemize}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}{\Large The setuid helper issue \hfill [\insertframenumber/\inserttotalframenumber]}
+\Large
+\begin{block}{pam\_unix: traditional approach}
+\begin{itemize}
+	\item a helper is needed to access /etc/shadow
+	\item unix\_chkpwd helper is setuid-root
+\end{itemize}
+\end{block}
+\begin{block}{pam\_tcb approach (since 2001)}
+\begin{itemize}
+	\item /etc/shadow \(\longrightarrow\) /etc/tcb/user/shadow
+	\item tcb\_chkpwd helper is setgid-shadow
+\end{itemize}
+\end{block}
+\begin{block}{pam\_unix: client-server approach (since 2025)}
+\begin{itemize}
+	\item unix\_chkpwd helper is unprivileged
+	\item communicates with pwaccessd via a Unix domain socket
+\end{itemize}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}{\Large Troubleshooting and best practices \hfill [\insertframenumber/\inserttotalframenumber]}
+\Large
+\begin{block}{Common issues}
+\begin{itemize}
+	\item Getting locked out
+	\item Incorrect module order or control directives
+	\item Syntax errors or typos in config files
+	\item Missing module arguments
+\end{itemize}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}{\Large Troubleshooting and best practices \hfill [\insertframenumber/\inserttotalframenumber]}
+\Large
+\begin{block}{Best Practices}
+\begin{itemize}
+	\item Know what you are doing
+	\item Backup before making changes
+	\item Always test the changes
+	\item Make incremental changes
+	\item Always have an emergency root shell open \\
+		when testing on a non-disposable system
+	\item Use distribution tools, study distribution defaults
+\end{itemize}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}{\Large Troubleshooting \hfill [\insertframenumber/\inserttotalframenumber]}
+\begin{block}{System logs is the primary tool}
+\begin{itemize}
+	\item journalctl -u {\it service-name}
+\end{itemize}
+\end{block}
+\begin{block}{Increase PAM verbosity}
+\begin{itemize}
+	\item PAM is usually quite verbose already.
+	\item Many modules become more verbose with {\bf debug} argument.
+\end{itemize}
+\end{block}
+\begin{block}{RTFM}
+\begin{itemize}
+	\item Manual pages: PAM(8), pam.conf(5), pam\_*(8).
+	\item The Linux-PAM System Administrators' Guide.
+	\item The Linux-PAM Module Writers' Guide.
+	\item The Linux-PAM Application Developers' Guide.
+\end{itemize}
+\end{block}
+\end{frame}
+
+%%%%%%%
+\begin{frame}{\Large Debugging \hfill [\insertframenumber/\inserttotalframenumber]}
+\Large
+\begin{columns}
+	\column{9cm}
+	\begin{block}{strace}
+	\begin{itemize}
+		\item -p \$PID
+		\item -f/--follow-forks
+		\item -b execve
+		\item -r/--relative-timestamps
+	\end{itemize}
+	\end{block}
+	\column{3cm}
+		\centerline{\pgfuseimage{strace-logo}}
+\end{columns}
+\end{frame}
+
+%%%%%%%
+\begin{frame}[noframenumbering]{Questions?}
+\end{frame}
+
+\end{document}
